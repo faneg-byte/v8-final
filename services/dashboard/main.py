@@ -205,23 +205,48 @@ def dash():
     mf="" if sector=="all" else f"AND la.market_type='{sector}'"
     cur.execute(f"SELECT la.match_date,la.home_team,la.away_team,la.league,la.market_type,la.predicted_outcome,la.spe_implied_prob FROM live_alpha la WHERE 1=1 {mf} ORDER BY la.spe_implied_prob DESC LIMIT 200")
     al=cur.fetchall()
-    if sector=="all":cur.execute("SELECT DISTINCT parlay_id,risk_grade,adjusted_cumulative FROM weaponized_matrix ORDER BY adjusted_cumulative DESC LIMIT 20")
-    else:cur.execute("SELECT DISTINCT parlay_id,risk_grade,adjusted_cumulative FROM weaponized_matrix WHERE market_type=%s ORDER BY adjusted_cumulative DESC LIMIT 20",(sector,))
-    pm=cur.fetchall();pl=[]
-    used_match_keys=set()
-    for p in pm:
-        cur.execute("SELECT wm.selection,wm.market_type,wm.spe_implied_prob,la.home_team,la.away_team FROM weaponized_matrix wm LEFT JOIN live_alpha la ON wm.alpha_id=la.id WHERE wm.parlay_id=%s ORDER BY wm.leg_number",(p["parlay_id"],))
-        raw_legs=cur.fetchall()
-        legs=[];skip_parlay=False
-        for l in raw_legs:
-            mk=f"{l.get('home_team','')}-{l.get('away_team','')}-{l['market_type']}"
-            if mk in used_match_keys:skip_parlay=True;break
-            legs.append({"selection":l["selection"],"market_type":l["market_type"],"spe":float(l["spe_implied_prob"]),"home_team":l.get("home_team",""),"away_team":l.get("away_team","")})
-        if skip_parlay or not legs:continue
-        for l in raw_legs:
-            mk=f"{l.get('home_team','')}-{l.get('away_team','')}-{l['market_type']}"
-            used_match_keys.add(mk)
-        pl.append({"pid":p["parlay_id"],"grade":p["risk_grade"] or "A","adj":float(p["adjusted_cumulative"] or 0),"legs":legs})
+    # --- Dynamic parlay generation from live_alpha signals ---
+    pool=[{"home_team":s["home_team"],"away_team":s["away_team"],"market_type":s["market_type"],
+           "selection":s["predicted_outcome"],"spe":float(s["spe_implied_prob"])} for s in al]
+    pool.sort(key=lambda x:x["spe"],reverse=True)
+    pl=[];used_match_market=set();pidx=0
+    # Generate 2-leg parlays
+    i=0
+    while i<len(pool):
+        mk_i=f"{pool[i]['home_team']}-{pool[i]['away_team']}-{pool[i]['market_type']}"
+        if mk_i in used_match_market:i+=1;continue
+        j=i+1
+        while j<len(pool):
+            mk_j=f"{pool[j]['home_team']}-{pool[j]['away_team']}-{pool[j]['market_type']}"
+            if mk_j in used_match_market or mk_j==mk_i:j+=1;continue
+            adj=round(pool[i]["spe"]*pool[j]["spe"]/100,2)
+            if adj<50:j+=1;continue
+            pidx+=1
+            pid=f"WM-{pidx:04X}"
+            grade="A" if adj>=85 else "B" if adj>=70 else "C"
+            pl.append({"pid":pid,"grade":grade,"adj":adj,"legs":[pool[i],pool[j]]})
+            used_match_market.add(mk_i);used_match_market.add(mk_j)
+            break
+        else:i+=1;continue
+        i+=1
+        if len(pl)>=30:break
+    # Generate 3-leg parlays from remaining signals
+    remaining=[s for s in pool if f"{s['home_team']}-{s['away_team']}-{s['market_type']}" not in used_match_market]
+    tri=0
+    while tri+2<len(remaining) and len(pl)<50:
+        a,b,c=remaining[tri],remaining[tri+1],remaining[tri+2]
+        mks={f"{x['home_team']}-{x['away_team']}-{x['market_type']}" for x in [a,b,c]}
+        if len(mks)==3:
+            adj=round(a["spe"]*b["spe"]*c["spe"]/10000,2)
+            if adj>=40:
+                pidx+=1;pid=f"WM-{pidx:04X}"
+                grade="A" if adj>=80 else "B" if adj>=60 else "C"
+                pl.append({"pid":pid,"grade":grade,"adj":adj,"legs":[a,b,c]})
+                for x in [a,b,c]:used_match_market.add(f"{x['home_team']}-{x['away_team']}-{x['market_type']}")
+                remaining=remaining[:tri]+remaining[tri+3:]
+            else:tri+=1
+        else:tri+=1
+    pl.sort(key=lambda x:x["adj"],reverse=True)
     cur.execute("SELECT t.name,s.micro_grip,s.meso_grip,s.macro_grip,s.dna_grip,s.system_diagnosis FROM soode_keys s JOIN teams t ON s.team_id=t.team_id ORDER BY s.dna_grip ASC")
     so=[{"name":r["name"],"micro":float(r["micro_grip"]),"meso":float(r["meso_grip"]),"macro":float(r["macro_grip"]),"dna":float(r["dna_grip"]),"diag":r["system_diagnosis"]} for r in cur.fetchall()]
     cur.execute(f"SELECT la.home_team,la.away_team,ra.matchup_class,ra.kelly_modifier,la.market_type,la.predicted_outcome,ra.refined_spe FROM refined_alpha ra JOIN live_alpha la ON ra.alpha_id=la.id WHERE 1=1 {mf} ORDER BY ra.refined_spe DESC LIMIT 200")
