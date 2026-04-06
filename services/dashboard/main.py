@@ -77,15 +77,15 @@ th:hover{color:#f85149}td{padding:8px 6px;border-bottom:1px solid #21262d}
 </div>
 <div class="tabs">
 <div class="tab on" onclick="stab('alpha')">Live alpha</div>
-<div class="tab" onclick="stab('matrix')">Weaponized matrix</div>
 <div class="tab" onclick="stab('soode')">Cascading SOODE</div>
 <div class="tab" onclick="stab('refined')">Refined alpha × SOODE</div>
+<div class="tab" onclick="stab('matrix')">Weaponized matrix</div>
 </div>
 <div class="pn on" id="p-alpha">
 <div class="fi"><input placeholder="Search team..." oninput="filt(this,'at')"></div>
-<table id="at"><thead><tr><th data-type="date">Date</th><th>Match</th><th>League</th><th>Market</th><th>Selection</th><th data-type="num">SPE %</th></tr></thead><tbody>
+<table id="at"><thead><tr><th data-type="date">Date / Time</th><th>Match</th><th>League</th><th>Market</th><th>Selection</th><th data-type="num">SPE %</th></tr></thead><tbody>
 {% for s in al %}<tr>
-<td data-v="{{s.match_date|td}}" style="white-space:nowrap">{{s.match_date|td}}</td>
+<td data-v="{{s.match_date|td}}" style="white-space:nowrap;font-size:11px">{{s.match_date|td}}</td>
 <td style="font-weight:500">{{s.home_team}} vs {{s.away_team}}</td>
 <td style="font-size:11px;color:#8b949e">{{s.league}}</td>
 <td>{% if s.market_type=='dc' %}<span class="p pb">DC</span>{% elif s.market_type=='h2h' %}<span class="p pp">H2H</span>{% elif s.market_type=='btts' %}<span class="p py">BTTS</span>{% else %}<span class="p pg">{{s.market_type}}</span>{% endif %}</td>
@@ -187,7 +187,10 @@ def cm(v):
     except:return v
 
 @app.template_filter('td')
-def td(v):return str(v)[:10]
+def td(v):
+    s=str(v)
+    if len(s)>10:return s[:16].replace('T',' ')
+    return s
 
 SN={"all":"All Markets","h2h":"H2H (1X2)","dc":"Double Chance","btts":"BTTS","over_1.5":"Over 1.5","over_2.5":"Over 2.5"}
 SC={"h2h":"#bc8cff","dc":"#58a6ff","btts":"#d29922","over_1.5":"#3fb950","over_2.5":"#f85149"}
@@ -205,10 +208,20 @@ def dash():
     if sector=="all":cur.execute("SELECT DISTINCT parlay_id,risk_grade,adjusted_cumulative FROM weaponized_matrix ORDER BY adjusted_cumulative DESC LIMIT 20")
     else:cur.execute("SELECT DISTINCT parlay_id,risk_grade,adjusted_cumulative FROM weaponized_matrix WHERE market_type=%s ORDER BY adjusted_cumulative DESC LIMIT 20",(sector,))
     pm=cur.fetchall();pl=[]
+    used_match_keys=set()
     for p in pm:
         cur.execute("SELECT wm.selection,wm.market_type,wm.spe_implied_prob,la.home_team,la.away_team FROM weaponized_matrix wm LEFT JOIN live_alpha la ON wm.alpha_id=la.id WHERE wm.parlay_id=%s ORDER BY wm.leg_number",(p["parlay_id"],))
-        legs=[{"selection":l["selection"],"market_type":l["market_type"],"spe":float(l["spe_implied_prob"]),"home_team":l.get("home_team",""),"away_team":l.get("away_team","")} for l in cur.fetchall()]
-        if legs:pl.append({"pid":p["parlay_id"],"grade":p["risk_grade"] or "A","adj":float(p["adjusted_cumulative"] or 0),"legs":legs})
+        raw_legs=cur.fetchall()
+        legs=[];skip_parlay=False
+        for l in raw_legs:
+            mk=f"{l.get('home_team','')}-{l.get('away_team','')}-{l['market_type']}"
+            if mk in used_match_keys:skip_parlay=True;break
+            legs.append({"selection":l["selection"],"market_type":l["market_type"],"spe":float(l["spe_implied_prob"]),"home_team":l.get("home_team",""),"away_team":l.get("away_team","")})
+        if skip_parlay or not legs:continue
+        for l in raw_legs:
+            mk=f"{l.get('home_team','')}-{l.get('away_team','')}-{l['market_type']}"
+            used_match_keys.add(mk)
+        pl.append({"pid":p["parlay_id"],"grade":p["risk_grade"] or "A","adj":float(p["adjusted_cumulative"] or 0),"legs":legs})
     cur.execute("SELECT t.name,s.micro_grip,s.meso_grip,s.macro_grip,s.dna_grip,s.system_diagnosis FROM soode_keys s JOIN teams t ON s.team_id=t.team_id ORDER BY s.dna_grip ASC")
     so=[{"name":r["name"],"micro":float(r["micro_grip"]),"meso":float(r["meso_grip"]),"macro":float(r["macro_grip"]),"dna":float(r["dna_grip"]),"diag":r["system_diagnosis"]} for r in cur.fetchall()]
     cur.execute(f"SELECT la.home_team,la.away_team,ra.matchup_class,ra.kelly_modifier,la.market_type,la.predicted_outcome,ra.refined_spe FROM refined_alpha ra JOIN live_alpha la ON ra.alpha_id=la.id WHERE 1=1 {mf} ORDER BY ra.refined_spe DESC LIMIT 200")
