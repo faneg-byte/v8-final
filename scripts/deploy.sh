@@ -139,6 +139,27 @@ step_preflight() {
         exit 1
     fi
 
+    # Self-heal: enable all required GCP APIs
+    local REQUIRED_APIS=(
+        "artifactregistry.googleapis.com"
+        "run.googleapis.com"
+        "sqladmin.googleapis.com"
+        "compute.googleapis.com"
+        "vpcaccess.googleapis.com"
+        "cloudscheduler.googleapis.com"
+        "secretmanager.googleapis.com"
+        "billingbudgets.googleapis.com"
+    )
+    log "  Ensuring required GCP APIs are enabled..."
+    for api in "${REQUIRED_APIS[@]}"; do
+        if ! gcloud services list --enabled --filter="name:${api}" --format="value(name)" 2>/dev/null | grep -q "${api}"; then
+            log "  Enabling ${api}..."
+            gcloud services enable "${api}" --quiet >> "$LOG_FILE" 2>&1 || warn "  Could not enable ${api}"
+        else
+            log "  ✓ ${api} already enabled"
+        fi
+    done
+
     checkpoint_set "preflight"
 }
 
@@ -270,6 +291,23 @@ step_migration() {
 # ═══════════════════════════════════════════════
 step_build_push() {
     hdr "STEP 5/7: BUILD & PUSH DOCKER IMAGES"
+
+    # Self-heal: verify Artifact Registry repo exists before any push
+    log "  Verifying Artifact Registry repo exists..."
+    if ! gcloud artifacts repositories describe v8-services \
+            --location="${REGION}" --format="value(name)" >> "$LOG_FILE" 2>&1; then
+        log "  Artifact Registry repo not found — creating..."
+        retry "Create Artifact Registry" \
+            gcloud artifacts repositories create v8-services \
+                --repository-format=docker \
+                --location="${REGION}" \
+                --description="V8 Engine Docker images" \
+                --quiet
+        # Wait for propagation
+        sleep 10
+    else
+        log "  ✓ Artifact Registry repo exists"
+    fi
 
     local git_sha
     git_sha=$(cd "${PROJECT_ROOT}" && git rev-parse --short HEAD 2>/dev/null || echo "dev")
