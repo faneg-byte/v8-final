@@ -213,17 +213,95 @@ step_terraform() {
     hdr "STEP 3/7: TERRAFORM INFRASTRUCTURE"
     cd "${PROJECT_ROOT}/terraform"
 
+    local TF_VARS=(
+        -var="project_id=${PROJECT_ID}"
+        -var="region=${REGION}"
+        -var="db_password=${DB_PASSWORD}"
+        -var="db_user=${DB_USER}"
+        -var="billing_account=${BILLING_ACCOUNT}"
+        -var="telegram_bot_token=${TELEGRAM_BOT_TOKEN:-}"
+        -var="telegram_chat_id=${TELEGRAM_CHAT_ID:-}"
+    )
+
     retry "Terraform init" terraform init -upgrade -input=false
 
+    # ── Self-heal: import pre-existing GCP resources into state ──
+    log "  Importing pre-existing resources (idempotent)..."
+    _tf_import() {
+        local addr="$1" id="$2"
+        if terraform state show "$addr" >> "$LOG_FILE" 2>&1; then
+            return 0  # already in state
+        fi
+        log "    Importing ${addr}..."
+        terraform import "${TF_VARS[@]}" -input=false "$addr" "$id" >> "$LOG_FILE" 2>&1 || true
+    }
+
+    _tf_import "google_service_account.runner" \
+        "projects/${PROJECT_ID}/serviceAccounts/v8-runner@${PROJECT_ID}.iam.gserviceaccount.com"
+
+    _tf_import "google_secret_manager_secret.db_pass" \
+        "projects/${PROJECT_ID}/secrets/v8-db-password"
+
+    _tf_import "google_artifact_registry_repository.docker" \
+        "projects/${PROJECT_ID}/locations/${REGION}/repositories/v8-services"
+
+    _tf_import "google_compute_network.vpc" \
+        "projects/${PROJECT_ID}/global/networks/v8-vpc"
+
+    _tf_import "google_compute_subnetwork.subnet" \
+        "projects/${PROJECT_ID}/regions/${REGION}/subnetworks/v8-subnet"
+
+    _tf_import "google_compute_global_address.sql_private" \
+        "projects/${PROJECT_ID}/global/addresses/v8-sql-ip"
+
+    _tf_import "google_vpc_access_connector.connector" \
+        "projects/${PROJECT_ID}/locations/${REGION}/connectors/v8-connector"
+
+    _tf_import "google_sql_database_instance.pg" \
+        "projects/${PROJECT_ID}/instances/v8-citadel"
+
+    _tf_import "google_sql_database.db" \
+        "projects/${PROJECT_ID}/instances/v8-citadel/databases/v8engine"
+
+    _tf_import "google_sql_user.operator" \
+        "${DB_USER}//v8-citadel"
+
+    _tf_import "google_cloud_run_v2_job.ingestor" \
+        "projects/${PROJECT_ID}/locations/${REGION}/jobs/v8-ingestor"
+
+    _tf_import "google_cloud_run_v2_job.modeler" \
+        "projects/${PROJECT_ID}/locations/${REGION}/jobs/v8-modeler"
+
+    _tf_import "google_cloud_run_v2_job.scanner" \
+        "projects/${PROJECT_ID}/locations/${REGION}/jobs/v8-scanner"
+
+    _tf_import "google_cloud_run_v2_service.dashboard" \
+        "projects/${PROJECT_ID}/locations/${REGION}/services/v8-dashboard"
+
+    _tf_import "google_cloud_scheduler_job.ingest" \
+        "projects/${PROJECT_ID}/locations/${REGION}/jobs/v8-ingest-nightly"
+
+    _tf_import "google_cloud_scheduler_job.model" \
+        "projects/${PROJECT_ID}/locations/${REGION}/jobs/v8-model-nightly"
+
+    _tf_import "google_cloud_scheduler_job.scan" \
+        "projects/${PROJECT_ID}/locations/${REGION}/jobs/v8-scan"
+
+    _tf_import "google_project_iam_member.runner_sql" \
+        "${PROJECT_ID} roles/cloudsql.client serviceAccount:v8-runner@${PROJECT_ID}.iam.gserviceaccount.com"
+
+    _tf_import "google_project_iam_member.runner_secrets" \
+        "${PROJECT_ID} roles/secretmanager.secretAccessor serviceAccount:v8-runner@${PROJECT_ID}.iam.gserviceaccount.com"
+
+    _tf_import "google_project_iam_member.runner_invoker" \
+        "${PROJECT_ID} roles/run.invoker serviceAccount:v8-runner@${PROJECT_ID}.iam.gserviceaccount.com"
+
+    log "  ✓ Import sweep complete"
+
+    # ── Plan & Apply ──
     log "  Planning infrastructure..."
     if ! terraform plan \
-        -var="project_id=${PROJECT_ID}" \
-        -var="region=${REGION}" \
-        -var="db_password=${DB_PASSWORD}" \
-        -var="db_user=${DB_USER}" \
-        -var="billing_account=${BILLING_ACCOUNT}" \
-        -var="telegram_bot_token=${TELEGRAM_BOT_TOKEN:-}" \
-        -var="telegram_chat_id=${TELEGRAM_CHAT_ID:-}" \
+        "${TF_VARS[@]}" \
         -out=plan.tfplan \
         -input=false \
         >> "$LOG_FILE" 2>&1; then
