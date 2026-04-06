@@ -157,8 +157,8 @@ document.addEventListener('DOMContentLoaded',function(){
             /* use data-v attribute if present, otherwise innerText */
             var va=cellA.getAttribute('data-v')||cellA.innerText.trim();
             var vb=cellB.getAttribute('data-v')||cellB.innerText.trim();
-            /* detect date: YYYY-MM-DD */
-            if(va.length===10 && va.charAt(4)==='-' && va.charAt(7)==='-'){
+            /* detect date: YYYY-MM-DD or YYYY-MM-DD HH:MM */
+            if(va.length>=10 && va.charAt(4)==='-' && va.charAt(7)==='-'){
               if(dir==='asc')return va<vb?-1:va>vb?1:0;
               return va>vb?-1:va<vb?1:0;
             }
