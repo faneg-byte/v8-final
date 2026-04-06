@@ -5,27 +5,26 @@
 # Copyright (c) 2026 Oluwasegun Fanegan. All Rights Reserved.
 # CONFIDENTIAL — Proprietary and trade secret information.
 #
-# Properties:
-#   • Idempotent   — safe to re-run; skips completed checkpoints
-#   • Self-healing — retries transient failures (network, Docker, gcloud)
-#   • Checkpointed — persists progress to .deploy_state; resumes on re-run
-#   • Single-block — one script, one invocation, full pipeline
+# ONE COMMAND. ONE BLOCK. EVERYTHING IN ORDER.
+#   ./scripts/deploy.sh
 #
-# Usage:
-#   ./scripts/deploy.sh                  # Full deploy (resume from last checkpoint)
-#   ./scripts/deploy.sh --reset          # Wipe checkpoints and start fresh
-#   ./scripts/deploy.sh --infra-only     # Terraform + migration only
-#   ./scripts/deploy.sh --services-only  # Build + push + deploy services only
-#   ./scripts/deploy.sh modeler          # Single service redeploy
+# Properties:
+#   • Single-block — one script, one invocation, full pipeline in order
+#   • Idempotent   — safe to re-run; skips completed checkpoints
+#   • Self-healing — retries transient failures with exponential backoff
+#   • Checkpointed — persists progress; resumes on re-run
 #
 # Required env vars:
 #   GCP_PROJECT_ID    — GCP project ID
 #   DB_PASSWORD       — Cloud SQL password
+#   BILLING_ACCOUNT   — GCP billing account ID
 #
 # Optional env vars:
 #   GCP_REGION        — defaults to us-east4
 #   DB_USER           — defaults to v8operator
 #   TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID — for scanner alerts
+#
+# To start fresh:  rm .deploy_state && ./scripts/deploy.sh
 # ═══════════════════════════════════════════════════════════════════════
 set -uo pipefail
 
@@ -36,6 +35,7 @@ PROJECT_ID="${GCP_PROJECT_ID:?Set GCP_PROJECT_ID}"
 REGION="${GCP_REGION:-us-east4}"
 DB_USER="${DB_USER:-v8operator}"
 DB_PASSWORD="${DB_PASSWORD:?Set DB_PASSWORD}"
+BILLING_ACCOUNT="${BILLING_ACCOUNT:?Set BILLING_ACCOUNT}"
 REGISTRY="${REGION}-docker.pkg.dev/${PROJECT_ID}/v8-services"
 SERVICE_ACCOUNT="v8-runner@${PROJECT_ID}.iam.gserviceaccount.com"
 
@@ -45,7 +45,6 @@ PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 STATE_FILE="${PROJECT_ROOT}/.deploy_state"
 LOG_FILE="${PROJECT_ROOT}/.deploy.log"
 MAX_RETRIES=3
-RETRY_DELAY=10
 
 # ─────────────────────────────────────────────
 # Logging
@@ -63,44 +62,33 @@ hdr()  { echo -e "\n${CYAN}${BOLD}═══ $1 ═══${NC}\n" | tee -a "$LOG_
 # Checkpoint System
 # ─────────────────────────────────────────────
 checkpoint_done() {
-    # Check if a checkpoint has been completed
-    local step="$1"
-    grep -qxF "${step}" "$STATE_FILE" 2>/dev/null
+    grep -qxF "$1" "$STATE_FILE" 2>/dev/null
 }
 
 checkpoint_set() {
-    # Mark a checkpoint as completed
-    local step="$1"
-    if ! checkpoint_done "$step"; then
-        echo "$step" >> "$STATE_FILE"
-        log "  ✓ Checkpoint saved: ${step}"
+    if ! checkpoint_done "$1"; then
+        echo "$1" >> "$STATE_FILE"
+        log "  ✓ Checkpoint saved: $1"
     fi
-}
-
-checkpoint_reset() {
-    rm -f "$STATE_FILE"
-    log "All checkpoints cleared."
 }
 
 # ─────────────────────────────────────────────
 # Self-Healing Retry Wrapper
 # ─────────────────────────────────────────────
 retry() {
-    # Usage: retry <description> <command...>
     local desc="$1"; shift
     local attempt=1
+    local delay=10
 
     while [ $attempt -le $MAX_RETRIES ]; do
         log "  [${attempt}/${MAX_RETRIES}] ${desc}..."
         if "$@" >> "$LOG_FILE" 2>&1; then
             return 0
         fi
-
         if [ $attempt -lt $MAX_RETRIES ]; then
-            warn "  Attempt ${attempt} failed for: ${desc}. Retrying in ${RETRY_DELAY}s..."
-            sleep $RETRY_DELAY
-            # Exponential backoff
-            RETRY_DELAY=$((RETRY_DELAY * 2))
+            warn "  Attempt ${attempt} failed for: ${desc}. Retrying in ${delay}s..."
+            sleep $delay
+            delay=$((delay * 2))
         else
             err "  All ${MAX_RETRIES} attempts failed for: ${desc}"
             return 1
@@ -109,31 +97,27 @@ retry() {
     done
 }
 
-# ─────────────────────────────────────────────
-# Pre-flight Checks
-# ─────────────────────────────────────────────
-preflight() {
-    hdr "PRE-FLIGHT CHECKS"
+# ═══════════════════════════════════════════════
+# STEP 1: PRE-FLIGHT CHECKS
+# ═══════════════════════════════════════════════
+step_preflight() {
+    if checkpoint_done "preflight"; then
+        log "  ⏭ Pre-flight already passed"
+        return 0
+    fi
+
+    hdr "STEP 1/7: PRE-FLIGHT CHECKS"
 
     local missing=0
-    for cmd in gcloud docker terraform psql cloud-sql-proxy git; do
+    for cmd in gcloud docker terraform; do
         if command -v "$cmd" &>/dev/null; then
             log "  ✓ ${cmd} found"
         else
-            # Non-fatal for optional tools
-            case "$cmd" in
-                psql|cloud-sql-proxy)
-                    warn "  ⚠ ${cmd} not found — migration step will be skipped"
-                    ;;
-                *)
-                    err "  ✗ ${cmd} not found — required"
-                    missing=$((missing + 1))
-                    ;;
-            esac
+            err "  ✗ ${cmd} not found — required"
+            missing=$((missing + 1))
         fi
     done
 
-    # Verify gcloud auth
     if ! gcloud auth print-access-token &>/dev/null; then
         err "gcloud not authenticated. Run: gcloud auth login"
         missing=$((missing + 1))
@@ -141,16 +125,14 @@ preflight() {
         log "  ✓ gcloud authenticated"
     fi
 
-    # Verify project
     local active_project
     active_project=$(gcloud config get-value project 2>/dev/null || true)
     if [ "$active_project" != "$PROJECT_ID" ]; then
-        log "  Setting active project to ${PROJECT_ID}..."
         gcloud config set project "$PROJECT_ID" --quiet
     fi
+
     log "  ✓ Project: ${PROJECT_ID}"
     log "  ✓ Region:  ${REGION}"
-    log "  ✓ Registry: ${REGISTRY}"
 
     if [ $missing -gt 0 ]; then
         err "Pre-flight failed: ${missing} required tool(s) missing."
@@ -160,52 +142,51 @@ preflight() {
     checkpoint_set "preflight"
 }
 
-# ─────────────────────────────────────────────
-# Step 1: Docker Authentication
-# ─────────────────────────────────────────────
+# ═══════════════════════════════════════════════
+# STEP 2: DOCKER AUTHENTICATION
+# ═══════════════════════════════════════════════
 step_docker_auth() {
     if checkpoint_done "docker_auth"; then
-        log "  ⏭ Docker auth already configured (checkpoint exists)"
+        log "  ⏭ Docker auth already configured"
         return 0
     fi
 
-    hdr "STEP 1: DOCKER AUTHENTICATION"
+    hdr "STEP 2/7: DOCKER AUTHENTICATION"
     retry "Configure Docker for Artifact Registry" \
         gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
 
     checkpoint_set "docker_auth"
 }
 
-# ─────────────────────────────────────────────
-# Step 2: Terraform Infrastructure
-# ─────────────────────────────────────────────
+# ═══════════════════════════════════════════════
+# STEP 3: TERRAFORM INFRASTRUCTURE
+#   Creates: VPC, Cloud SQL, Artifact Registry,
+#   Cloud Run jobs/services, Scheduler, Budget
+# ═══════════════════════════════════════════════
 step_terraform() {
     if checkpoint_done "terraform"; then
-        log "  ⏭ Terraform already applied (checkpoint exists)"
+        log "  ⏭ Terraform already applied"
         return 0
     fi
 
-    hdr "STEP 2: TERRAFORM INFRASTRUCTURE"
+    hdr "STEP 3/7: TERRAFORM INFRASTRUCTURE"
     cd "${PROJECT_ROOT}/terraform"
 
-    # Init (idempotent)
     retry "Terraform init" terraform init -upgrade -input=false
 
-    # Plan
-    log "  Planning infrastructure changes..."
+    log "  Planning infrastructure..."
     terraform plan \
         -var="project_id=${PROJECT_ID}" \
         -var="region=${REGION}" \
         -var="db_password=${DB_PASSWORD}" \
         -var="db_user=${DB_USER}" \
-        -var="billing_account=${BILLING_ACCOUNT:-}" \
+        -var="billing_account=${BILLING_ACCOUNT}" \
         -var="telegram_bot_token=${TELEGRAM_BOT_TOKEN:-}" \
         -var="telegram_chat_id=${TELEGRAM_CHAT_ID:-}" \
         -out=plan.tfplan \
         -input=false \
         >> "$LOG_FILE" 2>&1
 
-    # Apply
     retry "Terraform apply" terraform apply -auto-approve plan.tfplan
     rm -f plan.tfplan
 
@@ -213,70 +194,68 @@ step_terraform() {
     checkpoint_set "terraform"
 }
 
-# ─────────────────────────────────────────────
-# Step 3: Database Migration
-# ─────────────────────────────────────────────
+# ═══════════════════════════════════════════════
+# STEP 4: DATABASE MIGRATION
+# ═══════════════════════════════════════════════
 step_migration() {
     if checkpoint_done "migration"; then
-        log "  ⏭ Migration already applied (checkpoint exists)"
+        log "  ⏭ Migration already applied"
         return 0
     fi
 
-    hdr "STEP 3: DATABASE MIGRATION"
+    hdr "STEP 4/7: DATABASE MIGRATION"
 
-    # Check if migration tools are available
-    if ! command -v psql &>/dev/null || ! command -v cloud-sql-proxy &>/dev/null; then
-        warn "  psql or cloud-sql-proxy not found — skipping migration"
-        warn "  Run migration manually: psql -f migrations/001_schema.sql"
-        checkpoint_set "migration"
-        return 0
+    if ! command -v psql &>/dev/null; then
+        warn "  psql not found — installing via apt"
+        sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client >> "$LOG_FILE" 2>&1 || true
     fi
 
-    # Get connection name from Terraform
+    if ! command -v cloud-sql-proxy &>/dev/null && ! command -v cloud_sql_proxy &>/dev/null; then
+        warn "  cloud-sql-proxy not found — installing"
+        curl -o /usr/local/bin/cloud-sql-proxy \
+            "https://storage.googleapis.com/cloud-sql-connectors/cloud-sql-proxy/v2.14.3/cloud-sql-proxy.linux.amd64" \
+            >> "$LOG_FILE" 2>&1 || true
+        chmod +x /usr/local/bin/cloud-sql-proxy 2>/dev/null || true
+    fi
+
     local conn_name
-    conn_name=$(cd "${PROJECT_ROOT}/terraform" && terraform output -raw sql_connection_name 2>/dev/null)
+    conn_name=$(cd "${PROJECT_ROOT}/terraform" && terraform output -raw sql_connection_name 2>/dev/null || echo "")
     if [ -z "$conn_name" ]; then
-        err "  Could not get sql_connection_name from Terraform output"
-        warn "  Skipping migration — run manually after Terraform apply"
+        warn "  Could not get sql_connection_name — skipping migration"
         checkpoint_set "migration"
         return 0
     fi
 
-    # Start Cloud SQL Proxy (kill any existing)
-    pkill -f "cloud-sql-proxy.*${conn_name}" 2>/dev/null || true
+    # Kill any existing proxy
+    pkill -f "cloud-sql-proxy" 2>/dev/null || true
     sleep 1
 
-    cloud-sql-proxy "${conn_name}" --port=15432 &
+    cloud-sql-proxy "${conn_name}" --port=15432 >> "$LOG_FILE" 2>&1 &
     local proxy_pid=$!
 
-    # Wait for proxy to be ready
-    local proxy_ready=0
-    for i in $(seq 1 15); do
-        if pg_isready -h 127.0.0.1 -p 15432 -U "$DB_USER" &>/dev/null; then
-            proxy_ready=1
-            break
+    # Wait for proxy
+    local ready=0
+    for i in $(seq 1 20); do
+        if pg_isready -h 127.0.0.1 -p 15432 -U "$DB_USER" &>/dev/null 2>&1; then
+            ready=1; break
         fi
         sleep 1
     done
 
-    if [ $proxy_ready -eq 0 ]; then
-        warn "  Cloud SQL Proxy not ready after 15s — skipping migration"
+    if [ $ready -eq 0 ]; then
+        warn "  Cloud SQL Proxy not ready — skipping migration (run manually later)"
         kill $proxy_pid 2>/dev/null || true
         checkpoint_set "migration"
         return 0
     fi
 
-    # Run migration (idempotent — all CREATE IF NOT EXISTS)
     log "  Applying 001_schema.sql..."
     PGPASSWORD="$DB_PASSWORD" psql \
         -h 127.0.0.1 -p 15432 \
         -U "$DB_USER" -d v8engine \
         -f "${PROJECT_ROOT}/migrations/001_schema.sql" \
-        >> "$LOG_FILE" 2>&1 || {
-        warn "  Migration had warnings (may be safe if tables exist)"
-    }
+        >> "$LOG_FILE" 2>&1 || warn "  Migration had warnings (safe if tables exist)"
 
-    # Cleanup proxy
     kill $proxy_pid 2>/dev/null || true
     wait $proxy_pid 2>/dev/null || true
 
@@ -284,297 +263,169 @@ step_migration() {
     checkpoint_set "migration"
 }
 
-# ─────────────────────────────────────────────
-# Step 4: Build & Push Docker Images
-# ─────────────────────────────────────────────
-build_and_push_service() {
-    local service="$1"
-    local ckpt="build_${service}"
-
-    if checkpoint_done "$ckpt"; then
-        log "  ⏭ ${service} image already built and pushed (checkpoint exists)"
-        return 0
-    fi
+# ═══════════════════════════════════════════════
+# STEP 5: BUILD & PUSH DOCKER IMAGES
+#   Builds all 4 services and pushes to
+#   Artifact Registry (created in Step 3)
+# ═══════════════════════════════════════════════
+step_build_push() {
+    hdr "STEP 5/7: BUILD & PUSH DOCKER IMAGES"
 
     local git_sha
     git_sha=$(cd "${PROJECT_ROOT}" && git rev-parse --short HEAD 2>/dev/null || echo "dev")
-    local tag_latest="${REGISTRY}/${service}:latest"
-    local tag_sha="${REGISTRY}/${service}:${git_sha}"
 
-    log "  Building ${service} (platform: linux/amd64)..."
-    retry "Docker build ${service}" \
-        docker build \
-            --build-arg SERVICE="${service}" \
-            --platform linux/amd64 \
-            -t "$tag_latest" \
-            -t "$tag_sha" \
-            "${PROJECT_ROOT}"
-
-    log "  Pushing ${service}..."
-    retry "Docker push ${service} latest" docker push "$tag_latest"
-    retry "Docker push ${service} sha" docker push "$tag_sha"
-
-    checkpoint_set "$ckpt"
-}
-
-step_build_all() {
-    hdr "STEP 4: BUILD & PUSH DOCKER IMAGES"
-    for svc in "${SERVICES[@]}"; do
-        build_and_push_service "$svc"
-    done
-}
-
-# ─────────────────────────────────────────────
-# Step 5: Deploy to Cloud Run
-# ─────────────────────────────────────────────
-deploy_cloud_run_service() {
-    local service="$1"
-    local ckpt="deploy_${service}"
-
-    if checkpoint_done "$ckpt"; then
-        log "  ⏭ ${service} already deployed (checkpoint exists)"
-        return 0
-    fi
-
-    local image="${REGISTRY}/${service}:latest"
-
-    # Dashboard is a Cloud Run Service (always-on, public)
-    # Others are Cloud Run Jobs (batch, scheduled)
-    if [ "$service" = "dashboard" ]; then
-        log "  Deploying ${service} as Cloud Run Service..."
-        retry "Deploy ${service}" \
-            gcloud run deploy "v8-${service}" \
-                --image "$image" \
-                --region "$REGION" \
-                --platform managed \
-                --allow-unauthenticated \
-                --service-account "$SERVICE_ACCOUNT" \
-                --memory 512Mi \
-                --cpu 1 \
-                --min-instances 0 \
-                --max-instances 1 \
-                --set-env-vars "DB_HOST=$(cd "${PROJECT_ROOT}/terraform" && terraform output -raw sql_private_ip 2>/dev/null || echo ''),DB_PORT=5432,DB_NAME=v8engine,DB_USER=${DB_USER},DB_PASSWORD=${DB_PASSWORD}" \
-                --vpc-connector "v8-connector" \
-                --vpc-egress "private-ranges-only" \
-                --quiet
-    else
-        # Determine resource limits per service
-        local cpu="1" memory="1Gi" timeout="600s"
-        case "$service" in
-            modeler)
-                cpu="2"; memory="4Gi"; timeout="1800s"
-                ;;
-            scanner)
-                timeout="300s"
-                ;;
-        esac
-
-        log "  Deploying ${service} as Cloud Run Job..."
-
-        # Build env vars string
-        local env_vars="DB_HOST=$(cd "${PROJECT_ROOT}/terraform" && terraform output -raw sql_private_ip 2>/dev/null || echo ''),DB_PORT=5432,DB_NAME=v8engine,DB_USER=${DB_USER},DB_PASSWORD=${DB_PASSWORD}"
-
-        # Add Telegram vars for scanner
-        if [ "$service" = "scanner" ]; then
-            env_vars="${env_vars},TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-},TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-}"
+    for service in "${SERVICES[@]}"; do
+        local ckpt="build_${service}"
+        if checkpoint_done "$ckpt"; then
+            log "  ⏭ ${service} already built and pushed"
+            continue
         fi
 
-        retry "Deploy ${service}" \
-            gcloud run jobs update "v8-${service}" \
-                --image "$image" \
-                --region "$REGION" \
-                --service-account "$SERVICE_ACCOUNT" \
-                --memory "$memory" \
-                --cpu "$cpu" \
-                --task-timeout "$timeout" \
-                --max-retries 1 \
-                --set-env-vars "$env_vars" \
-                --vpc-connector "v8-connector" \
-                --vpc-egress "private-ranges-only" \
-                --quiet
-    fi
+        local tag_latest="${REGISTRY}/${service}:latest"
+        local tag_sha="${REGISTRY}/${service}:${git_sha}"
 
-    checkpoint_set "$ckpt"
-}
+        log "  Building ${service}..."
+        retry "Docker build ${service}" \
+            docker build \
+                --build-arg SERVICE="${service}" \
+                --platform linux/amd64 \
+                -t "$tag_latest" \
+                -t "$tag_sha" \
+                "${PROJECT_ROOT}"
 
-step_deploy_all() {
-    hdr "STEP 5: DEPLOY TO CLOUD RUN"
-    for svc in "${SERVICES[@]}"; do
-        deploy_cloud_run_service "$svc"
+        log "  Pushing ${service}..."
+        retry "Docker push ${service} latest" docker push "$tag_latest"
+        retry "Docker push ${service} sha" docker push "$tag_sha"
+
+        checkpoint_set "$ckpt"
     done
 }
 
-# ─────────────────────────────────────────────
-# Step 6: Health Verification
-# ─────────────────────────────────────────────
+# ═══════════════════════════════════════════════
+# STEP 6: DEPLOY TO CLOUD RUN
+#   Updates Cloud Run jobs/services with new images
+# ═══════════════════════════════════════════════
+step_deploy() {
+    hdr "STEP 6/7: DEPLOY TO CLOUD RUN"
+
+    local sql_ip
+    sql_ip=$(cd "${PROJECT_ROOT}/terraform" && terraform output -raw sql_private_ip 2>/dev/null || echo "")
+
+    for service in "${SERVICES[@]}"; do
+        local ckpt="deploy_${service}"
+        if checkpoint_done "$ckpt"; then
+            log "  ⏭ ${service} already deployed"
+            continue
+        fi
+
+        local image="${REGISTRY}/${service}:latest"
+        local env_vars="DB_HOST=${sql_ip},DB_PORT=5432,DB_NAME=v8engine,DB_USER=${DB_USER},DB_PASSWORD=${DB_PASSWORD}"
+
+        if [ "$service" = "dashboard" ]; then
+            log "  Deploying ${service} as Cloud Run Service..."
+            retry "Deploy ${service}" \
+                gcloud run deploy "v8-${service}" \
+                    --image "$image" \
+                    --region "$REGION" \
+                    --platform managed \
+                    --allow-unauthenticated \
+                    --service-account "$SERVICE_ACCOUNT" \
+                    --memory 512Mi --cpu 1 \
+                    --min-instances 0 --max-instances 1 \
+                    --set-env-vars "$env_vars" \
+                    --vpc-connector "v8-connector" \
+                    --vpc-egress "private-ranges-only" \
+                    --quiet
+        else
+            local cpu="1" memory="1Gi" timeout="600s"
+            case "$service" in
+                modeler)  cpu="2"; memory="4Gi"; timeout="1800s" ;;
+                scanner)  timeout="300s"
+                          env_vars="${env_vars},TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-},TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-}" ;;
+            esac
+
+            log "  Deploying ${service} as Cloud Run Job..."
+            retry "Deploy ${service}" \
+                gcloud run jobs update "v8-${service}" \
+                    --image "$image" \
+                    --region "$REGION" \
+                    --service-account "$SERVICE_ACCOUNT" \
+                    --memory "$memory" --cpu "$cpu" \
+                    --task-timeout "$timeout" \
+                    --max-retries 1 \
+                    --set-env-vars "$env_vars" \
+                    --vpc-connector "v8-connector" \
+                    --vpc-egress "private-ranges-only" \
+                    --quiet
+        fi
+
+        checkpoint_set "$ckpt"
+    done
+}
+
+# ═══════════════════════════════════════════════
+# STEP 7: VERIFY & SUMMARY
+# ═══════════════════════════════════════════════
 step_verify() {
-    if checkpoint_done "verify"; then
-        log "  ⏭ Verification already passed (checkpoint exists)"
-        return 0
-    fi
+    hdr "STEP 7/7: VERIFY & SUMMARY"
 
-    hdr "STEP 6: HEALTH VERIFICATION"
-
-    local all_healthy=1
-
-    # Dashboard — Cloud Run Service with public URL
+    # Dashboard health
     local dash_url
     dash_url=$(gcloud run services describe v8-dashboard \
         --region="$REGION" --format='value(status.url)' 2>/dev/null || echo "")
 
     if [ -n "$dash_url" ]; then
-        log "  Checking dashboard health at ${dash_url}/health ..."
-        local dash_status
-        dash_status=$(curl -s -o /dev/null -w "%{http_code}" "${dash_url}/health" 2>/dev/null || echo "000")
-        if [ "$dash_status" = "200" ]; then
-            log "  ✓ Dashboard healthy (HTTP ${dash_status})"
+        local status_code
+        status_code=$(curl -s -o /dev/null -w "%{http_code}" "${dash_url}/health" 2>/dev/null || echo "000")
+        if [ "$status_code" = "200" ]; then
+            log "  ✓ Dashboard healthy (HTTP 200)"
         else
-            warn "  ⚠ Dashboard returned HTTP ${dash_status} (may need DB connectivity)"
-            all_healthy=0
+            warn "  ⚠ Dashboard HTTP ${status_code} (may need data)"
         fi
-    else
-        warn "  ⚠ Dashboard URL not found"
-        all_healthy=0
     fi
 
-    # Jobs — verify they exist and image is updated
+    # Job images
     for svc in ingestor modeler scanner; do
-        local job_image
-        job_image=$(gcloud run jobs describe "v8-${svc}" \
+        local img
+        img=$(gcloud run jobs describe "v8-${svc}" \
             --region="$REGION" \
-            --format='value(template.template.containers[0].image)' 2>/dev/null || echo "")
-
-        if echo "$job_image" | grep -q "${REGISTRY}/${svc}"; then
-            log "  ✓ v8-${svc} job image updated: ${job_image}"
-        else
-            warn "  ⚠ v8-${svc} job image mismatch: ${job_image}"
-            all_healthy=0
-        fi
-    done
-
-    if [ $all_healthy -eq 1 ]; then
-        log "  All services verified healthy."
-    else
-        warn "  Some services have warnings — check logs for details."
-        warn "  This is often expected on first deploy (DB may not be populated yet)."
-    fi
-
-    checkpoint_set "verify"
-}
-
-# ─────────────────────────────────────────────
-# Step 7: Summary
-# ─────────────────────────────────────────────
-step_summary() {
-    hdr "DEPLOYMENT COMPLETE"
-
-    log "Service Status:"
-    echo ""
-
-    # Dashboard URL
-    local dash_url
-    dash_url=$(gcloud run services describe v8-dashboard \
-        --region="$REGION" --format='value(status.url)' 2>/dev/null || echo "not deployed")
-    echo -e "  ${BOLD}Dashboard:${NC}  ${dash_url}"
-
-    # Jobs
-    for svc in ingestor modeler scanner; do
-        local status
-        status=$(gcloud run jobs describe "v8-${svc}" \
-            --region="$REGION" \
-            --format='value(template.template.containers[0].image)' 2>/dev/null || echo "not deployed")
-        echo -e "  ${BOLD}${svc}:${NC}  ${status}"
+            --format='value(template.template.containers[0].image)' 2>/dev/null || echo "unknown")
+        log "  ✓ v8-${svc}: ${img}"
     done
 
     echo ""
-    log "Checkpoints completed:"
-    if [ -f "$STATE_FILE" ]; then
-        while IFS= read -r line; do
-            echo -e "  ${GREEN}✓${NC} ${line}"
-        done < "$STATE_FILE"
-    fi
-
+    log "═══ DEPLOYMENT COMPLETE ═══"
     echo ""
-    log "Log file: ${LOG_FILE}"
-    log "State file: ${STATE_FILE}"
+    echo -e "  ${BOLD}Dashboard:${NC}  ${dash_url:-not available}"
     echo ""
     log "Next steps:"
-    echo "  1. Ingest data:   gcloud run jobs execute v8-ingestor --region=${REGION}"
-    echo "  2. Run modeler:   gcloud run jobs execute v8-modeler --region=${REGION}"
-    echo "  3. Run scanner:   gcloud run jobs execute v8-scanner --region=${REGION}"
-    echo "  4. Run WFO:       curl -X POST <modeler-url>/wfo"
-    echo "  5. View dashboard: ${dash_url}"
+    echo "  1. gcloud run jobs execute v8-ingestor --region=${REGION}"
+    echo "  2. gcloud run jobs execute v8-modeler  --region=${REGION}"
+    echo "  3. gcloud run jobs execute v8-scanner  --region=${REGION}"
     echo ""
+    log "Checkpoints saved to: ${STATE_FILE}"
+    log "Full log at: ${LOG_FILE}"
 }
 
-# ─────────────────────────────────────────────
-# Main Orchestrator
-# ─────────────────────────────────────────────
-main() {
-    # Initialize log
-    echo "═══ V8 Deploy started at $(_ts) ═══" >> "$LOG_FILE"
+# ═══════════════════════════════════════════════
+# MAIN — Single block, strict order, no flags
+# ═══════════════════════════════════════════════
+echo "═══ V8 Deploy started at $(_ts) ═══" >> "$LOG_FILE"
 
-    # Handle flags
-    case "${1:-}" in
-        --reset)
-            checkpoint_reset
-            shift
-            ;;
-        --infra-only)
-            preflight
-            step_docker_auth
-            step_terraform
-            step_migration
-            step_summary
-            exit 0
-            ;;
-        --services-only)
-            preflight
-            step_docker_auth
-            step_build_all
-            step_deploy_all
-            step_verify
-            step_summary
-            exit 0
-            ;;
-    esac
+hdr "V8 ENGINE — SINGLE-BLOCK DEPLOY"
 
-    # Single service redeploy
-    if [ -n "${1:-}" ] && [[ " ${SERVICES[*]} " =~ " $1 " ]]; then
-        local target="$1"
-        log "Single service redeploy: ${target}"
-        preflight
-        step_docker_auth
-        # Force rebuild by removing checkpoint
-        sed -i "/^build_${target}$/d" "$STATE_FILE" 2>/dev/null || true
-        sed -i "/^deploy_${target}$/d" "$STATE_FILE" 2>/dev/null || true
-        build_and_push_service "$target"
-        deploy_cloud_run_service "$target"
-        step_summary
-        exit 0
-    fi
+if [ -f "$STATE_FILE" ]; then
+    log "Resuming from $(wc -l < "$STATE_FILE") completed checkpoints"
+else
+    log "Fresh deployment"
+fi
 
-    # Full pipeline — idempotent, resumes from last checkpoint
-    hdr "V8 ENGINE FULL DEPLOYMENT"
-    log "State file: ${STATE_FILE}"
-    if [ -f "$STATE_FILE" ]; then
-        local completed
-        completed=$(wc -l < "$STATE_FILE")
-        log "Resuming from checkpoint (${completed} steps already complete)"
-    else
-        log "Fresh deployment — no prior checkpoints"
-    fi
+step_preflight      # 1. Check tools & auth
+step_docker_auth    # 2. Configure Docker for Artifact Registry
+step_terraform      # 3. Create infra (VPC, SQL, Registry, Run, Scheduler)
+step_migration      # 4. Apply database schema
+step_build_push     # 5. Build & push all 4 Docker images
+step_deploy         # 6. Deploy images to Cloud Run
+step_verify         # 7. Health check & summary
 
-    preflight
-    step_docker_auth
-    step_terraform
-    step_migration
-    step_build_all
-    step_deploy_all
-    step_verify
-    step_summary
-
-    echo "═══ V8 Deploy completed at $(_ts) ═══" >> "$LOG_FILE"
-}
-
-main "$@"
+echo "═══ V8 Deploy completed at $(_ts) ═══" >> "$LOG_FILE"
