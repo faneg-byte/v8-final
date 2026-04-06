@@ -403,7 +403,7 @@ step_deploy() {
         fi
 
         local image="${REGISTRY}/${service}:latest"
-        local env_vars="DB_HOST=${sql_ip},DB_PORT=5432,DB_NAME=v8engine,DB_USER=${DB_USER},DB_PASSWORD=${DB_PASSWORD}"
+        local env_vars="DB_HOST=${sql_ip},DB_PORT=5432,DB_NAME=v8engine,DB_USER=${DB_USER}"
 
         if [ "$service" = "dashboard" ]; then
             log "  Deploying ${service} as Cloud Run Service..."
@@ -416,7 +416,7 @@ step_deploy() {
                     --service-account "$SERVICE_ACCOUNT" \
                     --memory 512Mi --cpu 1 \
                     --min-instances 0 --max-instances 1 \
-                    --set-env-vars "$env_vars" \
+                    --update-env-vars "$env_vars" \
                     --vpc-connector "v8-connector" \
                     --vpc-egress "private-ranges-only" \
                     --quiet; then
@@ -441,7 +441,7 @@ step_deploy() {
                     --memory "$memory" --cpu "$cpu" \
                     --task-timeout "$timeout" \
                     --max-retries 1 \
-                    --set-env-vars "$env_vars" \
+                    --update-env-vars "$env_vars" \
                     --vpc-connector "v8-connector" \
                     --vpc-egress "private-ranges-only" \
                     --quiet; then
