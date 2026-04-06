@@ -325,6 +325,9 @@ step_terraform() {
 
 # ═══════════════════════════════════════════════
 # STEP 4: DATABASE MIGRATION
+#   Uses gcloud sql connect (tunnels through
+#   Google's network — works from Cloud Shell
+#   even with private-IP-only instances)
 # ═══════════════════════════════════════════════
 step_migration() {
     if checkpoint_done "migration"; then
@@ -334,63 +337,20 @@ step_migration() {
 
     hdr "STEP 4/7: DATABASE MIGRATION"
 
-    # Self-heal: install psql if missing
-    if ! command -v psql &>/dev/null; then
-        log "  Installing postgresql-client..."
-        sudo apt-get update -qq >> "$LOG_FILE" 2>&1
-        sudo apt-get install -y -qq postgresql-client >> "$LOG_FILE" 2>&1 || true
-    fi
+    # Self-heal: enable sqladmin API (needed for gcloud sql connect)
+    gcloud services enable sqladmin.googleapis.com --quiet >> "$LOG_FILE" 2>&1 || true
 
-    # Self-heal: install cloud-sql-proxy if missing
-    if ! command -v cloud-sql-proxy &>/dev/null; then
-        log "  Installing cloud-sql-proxy..."
-        curl -sSL -o /tmp/cloud-sql-proxy \
-            "https://storage.googleapis.com/cloud-sql-connectors/cloud-sql-proxy/v2.14.3/cloud-sql-proxy.linux.amd64" \
-            >> "$LOG_FILE" 2>&1
-        sudo install -m 755 /tmp/cloud-sql-proxy /usr/local/bin/cloud-sql-proxy
-        rm -f /tmp/cloud-sql-proxy
-    fi
-
-    local conn_name
-    conn_name=$(cd "${PROJECT_ROOT}/terraform" && terraform output -raw sql_connection_name 2>/dev/null || echo "")
-    if [ -z "$conn_name" ]; then
-        die "Could not get sql_connection_name from Terraform. Was Terraform applied?"
-    fi
-
-    # Kill any existing proxy
-    pkill -f "cloud-sql-proxy" 2>/dev/null || true
-    sleep 1
-
-    cloud-sql-proxy "${conn_name}" --port=15432 >> "$LOG_FILE" 2>&1 &
-    local proxy_pid=$!
-
-    # Wait for proxy to be ready
-    local ready=0
-    for i in $(seq 1 30); do
-        if pg_isready -h 127.0.0.1 -p 15432 -U "$DB_USER" >> "$LOG_FILE" 2>&1; then
-            ready=1; break
-        fi
-        sleep 1
-    done
-
-    if [ $ready -eq 0 ]; then
-        kill $proxy_pid 2>/dev/null || true
-        die "Cloud SQL Proxy failed to connect after 30s. Check .deploy.log"
-    fi
-
-    log "  Applying 001_schema.sql..."
-    if PGPASSWORD="$DB_PASSWORD" psql \
-        -h 127.0.0.1 -p 15432 \
-        -U "$DB_USER" -d v8engine \
-        -f "${PROJECT_ROOT}/migrations/001_schema.sql" \
+    log "  Applying 001_schema.sql via gcloud sql connect..."
+    if gcloud sql connect v8-citadel \
+        --user="${DB_USER}" \
+        --database=v8engine \
+        --quiet \
+        < "${PROJECT_ROOT}/migrations/001_schema.sql" \
         >> "$LOG_FILE" 2>&1; then
         log "  ✓ Migration applied"
     else
         warn "  Migration had warnings (safe if tables already exist)"
     fi
-
-    kill $proxy_pid 2>/dev/null || true
-    wait $proxy_pid 2>/dev/null || true
 
     checkpoint_set "migration"
 }
