@@ -1,0 +1,15 @@
+steps:
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '--build-arg'
+      - 'SERVICE=${_SERVICE}'
+      - '-t'
+      - '${_REGISTRY}/${_SERVICE}:latest'
+      - '.'
+images:
+  - '${_REGISTRY}/${_SERVICE}:latest'
+substitutions:
+  _SERVICE: ''
+  _REGISTRY: ''
+timeout: 600s

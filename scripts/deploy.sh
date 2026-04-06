@@ -375,9 +375,8 @@ step_build_push() {
         log "  Building & pushing ${service} via Cloud Build..."
         if retry "Cloud Build ${service}" \
             gcloud builds submit "${PROJECT_ROOT}" \
-                --tag "$tag" \
-                --build-arg "SERVICE=${service}" \
-                --timeout=600s \
+                --config="${PROJECT_ROOT}/cloudbuild.yaml" \
+                --substitutions="_SERVICE=${service},_REGISTRY=${REGISTRY}" \
                 --quiet; then
             checkpoint_set "$ckpt"
         else
