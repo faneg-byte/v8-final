@@ -22,7 +22,7 @@ body{font-family:-apple-system,system-ui,sans-serif;background:#0d1117;color:#e6
 a.sb{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:6px;cursor:pointer;font-size:13px;margin-bottom:4px;color:#e6edf3;text-decoration:none}
 a.sb:hover{background:#21262d}a.sb.on{background:#21262d;color:#f85149}
 .dot{width:8px;height:8px;border-radius:50%;display:inline-block}
-.mn{flex:1;padding:24px;max-width:1000px;overflow-x:auto}
+.mn{flex:1;padding:24px;max-width:1100px;overflow-x:auto}
 .hd{display:flex;align-items:center;gap:12px;margin-bottom:24px}
 .hd h1{font-size:20px;font-weight:600}
 .hd .st{margin-left:auto;display:flex;align-items:center;gap:6px;font-size:13px;color:#3fb950}
@@ -33,9 +33,11 @@ a.sb:hover{background:#21262d}a.sb.on{background:#21262d;color:#f85149}
 .tab{padding:8px 16px;font-size:13px;color:#8b949e;cursor:pointer;border-bottom:2px solid transparent}
 .tab.on{color:#f85149;border-bottom-color:#f85149}.tab:hover{color:#e6edf3}
 .pn{display:none}.pn.on{display:block}
-.fi{display:flex;gap:8px;margin-bottom:12px}
+.fi{display:flex;gap:8px;margin-bottom:12px;align-items:center}
 .fi input{background:#0d1117;border:1px solid #30363d;color:#e6edf3;padding:6px 10px;border-radius:6px;font-size:12px;width:200px}
 .fi select{background:#0d1117;border:1px solid #30363d;color:#e6edf3;padding:6px 10px;border-radius:6px;font-size:12px}
+.dlbtn{background:#21262d;border:1px solid #30363d;color:#8b949e;padding:5px 12px;border-radius:6px;font-size:11px;cursor:pointer;margin-left:auto}
+.dlbtn:hover{background:#30363d;color:#e6edf3}
 table{width:100%;border-collapse:collapse;font-size:13px}
 th{text-align:left;padding:8px 6px;color:#8b949e;font-weight:400;border-bottom:1px solid #30363d;cursor:pointer;user-select:none;white-space:nowrap}
 th:hover{color:#f85149}td{padding:8px 6px;border-bottom:1px solid #21262d}
@@ -52,6 +54,9 @@ th:hover{color:#f85149}td{padding:8px 6px;border-bottom:1px solid #21262d}
 .gr{display:flex;justify-content:space-between;font-size:11px;color:#8b949e;margin-top:5px}
 .ab{height:4px;border-radius:2px;background:#21262d;margin-top:4px}
 .af{height:100%;border-radius:2px}
+.grp-hd{font-size:14px;font-weight:600;color:#e6edf3;margin:16px 0 8px;padding:8px 0;border-bottom:1px solid #30363d;cursor:pointer;user-select:none}
+.grp-hd:hover{color:#f85149}
+.grp-body{display:block}.grp-body.collapsed{display:none}
 @media(max-width:768px){.layout{flex-direction:column}.sidebar{width:100%;border-right:none;border-bottom:1px solid #30363d;padding:12px;display:flex;flex-wrap:wrap;gap:4px}a.sb{width:auto;padding:6px 12px}.sts{grid-template-columns:repeat(2,1fr)}.sg{grid-template-columns:1fr}}
 </style></head><body>
 <div class="layout">
@@ -78,11 +83,13 @@ th:hover{color:#f85149}td{padding:8px 6px;border-bottom:1px solid #21262d}
 <div class="tabs">
 <div class="tab on" onclick="stab('alpha')">Live alpha</div>
 <div class="tab" onclick="stab('soode')">Cascading SOODE</div>
-<div class="tab" onclick="stab('refined')">Refined alpha × SOODE</div>
+<div class="tab" onclick="stab('refined')">Refined alpha x SOODE</div>
 <div class="tab" onclick="stab('matrix')">Weaponized matrix</div>
 </div>
+
+<!-- LIVE ALPHA -->
 <div class="pn on" id="p-alpha">
-<div class="fi"><input placeholder="Search team..." oninput="filt(this,'at')"></div>
+<div class="fi"><input placeholder="Search team..." oninput="filt(this,'at')"><button class="dlbtn" onclick="dlCSV('at','live_alpha.csv')">Download CSV</button></div>
 <table id="at"><thead><tr><th data-type="date">Date / Time</th><th>Match</th><th>League</th><th>Market</th><th>Selection</th><th data-type="num">SPE %</th></tr></thead><tbody>
 {% for s in al %}<tr>
 <td data-v="{{s.match_date|td}}" style="white-space:nowrap;font-size:11px">{{s.match_date|td}}</td>
@@ -93,36 +100,64 @@ th:hover{color:#f85149}td{padding:8px 6px;border-bottom:1px solid #21262d}
 <td data-v="{{s.spe_implied_prob}}" class="m">{{s.spe_implied_prob}}</td>
 </tr>{% endfor %}</tbody></table></div>
 
-<div class="pn" id="p-matrix">
-{% for p in pl %}
-<div class="pc"><div class="ph"><span class="p pg">{{p.grade}}</span><span style="font-weight:500;font-size:13px">{{p.pid}}</span><span style="font-size:12px;color:#8b949e;margin-left:auto">{{p.legs|length}}-leg | adj={{p.adj}}%</span></div>
-<table><thead><tr><th>#</th><th>Match</th><th>Market</th><th>Selection</th><th data-type="num">SPE</th></tr></thead><tbody>
-{% for l in p.legs %}<tr><td>{{loop.index}}</td><td>{{l.home_team}} vs {{l.away_team}}</td><td>{{l.market_type}}</td><td>{{l.selection}}</td><td data-v="{{l.spe}}" class="m">{{l.spe}}</td></tr>{% endfor %}</tbody></table></div>
-{% endfor %}
-{% if not pl %}<div style="color:#8b949e;padding:20px;text-align:center">No parlays</div>{% endif %}
-</div>
-
+<!-- CASCADING SOODE -->
 <div class="pn" id="p-soode">
 <div class="fi"><input placeholder="Search team..." oninput="fsoode(this.value)">
-<select onchange="fdiag(this.value)"><option value="all">All</option><option value="Stable">Stable</option><option value="Surging">Surging</option><option value="Micro">Micro-Shock</option><option value="Decline">Decline</option></select></div>
+<select onchange="fdiag(this.value)"><option value="all">All</option><option value="Stable">Stable</option><option value="Surging">Surging</option><option value="Micro">Micro-Shock</option><option value="Decline">Decline</option></select>
+<button class="dlbtn" onclick="dlSOODE()">Download CSV</button></div>
+<table id="soode-tbl" style="display:none"><thead><tr><th>Team</th><th>Diagnosis</th><th>Micro</th><th>Meso</th><th>Macro</th><th>DNA</th></tr></thead><tbody>
+{% for s in so %}<tr><td>{{s.name}}</td><td>{{s.diag}}</td><td>{{s.micro}}</td><td>{{s.meso}}</td><td>{{s.macro}}</td><td>{{s.dna}}</td></tr>{% endfor %}</tbody></table>
 <div class="sg" id="sgg">
 {% for s in so %}<div class="sc" data-n="{{s.name|lower}}" data-d="{{s.diag}}">
 <div style="font-weight:500;font-size:13px;margin-bottom:4px">{{s.name}}</div>
+<div style="font-size:11px;color:#8b949e;margin-bottom:6px">{{s.date_label}}</div>
 {% if 'Stable' in s.diag %}<span class="p pg">Stable</span>{% elif 'Surging' in s.diag %}<span class="p pb">Surging</span>{% elif 'Micro' in s.diag %}<span class="p py">Micro-shock</span>{% elif 'Decline' in s.diag %}<span class="p pr">Decline</span>{% endif %}
 {% set cl='#3fb950' if 'Stable' in s.diag else '#58a6ff' if 'Surging' in s.diag else '#d29922' if 'Micro' in s.diag else '#f85149' %}
 <div style="margin-top:8px">{% for g in [('Micro',s.micro),('Meso',s.meso),('Macro',s.macro),('DNA',s.dna)] %}
 <div class="gr"><span>{{g[0]}}</span><span>{{g[1]}}</span></div>
 <div class="gb"><div class="gf" style="width:{{(g[1]*150)|int}}%;background:{{cl}}"></div></div>{% endfor %}</div></div>{% endfor %}</div></div>
 
+<!-- REFINED ALPHA x SOODE -->
 <div class="pn" id="p-refined">
-<div class="fi"><input placeholder="Search team..." oninput="filt(this,'rt')"></div>
-<table id="rt"><thead><tr><th>Match</th><th>Matchup</th><th data-type="num">Mod</th><th>Market</th><th>Selection</th><th data-type="num">Refined SPE</th></tr></thead><tbody>
+<div class="fi"><input placeholder="Search team..." oninput="filt(this,'rt')"><button class="dlbtn" onclick="dlCSV('rt','refined_alpha.csv')">Download CSV</button></div>
+<table id="rt"><thead><tr><th data-type="date">Date / Time</th><th>Match</th><th>Matchup</th><th data-type="num">Mod</th><th>Market</th><th>Selection</th><th data-type="num">Refined SPE</th></tr></thead><tbody>
 {% for r in rf %}<tr>
+<td data-v="{{r.date}}" style="white-space:nowrap;font-size:11px">{{r.date}}</td>
 <td style="font-weight:500">{{r.home}} vs {{r.away}}</td>
 <td>{% if 'Surging' in r.matchup %}<span class="p pb">{{r.matchup}}</span>{% elif 'Micro' in r.matchup %}<span class="p py">{{r.matchup}}</span>{% elif 'Decline' in r.matchup %}<span class="p pr">{{r.matchup}}</span>{% else %}<span class="p pg">{{r.matchup}}</span>{% endif %}</td>
 <td data-v="{{r.modifier}}" class="m" style="text-align:center">{{r.modifier}}x</td>
 <td>{{r.market}}</td><td>{{r.selection}}</td>
 <td data-v="{{r.refined_spe}}" class="m">{{r.refined_spe}}</td></tr>{% endfor %}</tbody></table></div>
+
+<!-- WEAPONIZED MATRIX -->
+<div class="pn" id="p-matrix">
+<div class="fi"><button class="dlbtn" onclick="dlMatrix()">Download CSV</button></div>
+{% set legs2 = [] %}{% set legs3 = [] %}
+{% for p in pl %}{% if p.legs|length == 2 %}{% if legs2.append(p) %}{% endif %}{% else %}{% if legs3.append(p) %}{% endif %}{% endif %}{% endfor %}
+
+{% if legs2 %}
+<div class="grp-hd" onclick="toggleGrp(this)">2-Leg Parlays ({{legs2|length}}) &#9660;</div>
+<div class="grp-body">
+{% for p in legs2 %}
+<div class="pc"><div class="ph"><span class="p pg">{{p.grade}}</span><span style="font-weight:500;font-size:13px">{{p.pid}}</span><span style="font-size:12px;color:#8b949e;margin-left:auto">2-leg | adj={{p.adj}}%</span></div>
+<table><thead><tr><th>#</th><th>Match</th><th>Market</th><th>Selection</th><th data-type="num">SPE</th></tr></thead><tbody>
+{% for l in p.legs %}<tr><td>{{loop.index}}</td><td>{{l.home_team}} vs {{l.away_team}}</td><td>{{l.market_type}}</td><td>{{l.selection}}</td><td data-v="{{l.spe}}" class="m">{{l.spe}}</td></tr>{% endfor %}</tbody></table></div>
+{% endfor %}
+</div>{% endif %}
+
+{% if legs3 %}
+<div class="grp-hd" onclick="toggleGrp(this)">3-Leg Parlays ({{legs3|length}}) &#9660;</div>
+<div class="grp-body">
+{% for p in legs3 %}
+<div class="pc"><div class="ph"><span class="p pg">{{p.grade}}</span><span style="font-weight:500;font-size:13px">{{p.pid}}</span><span style="font-size:12px;color:#8b949e;margin-left:auto">3-leg | adj={{p.adj}}%</span></div>
+<table><thead><tr><th>#</th><th>Match</th><th>Market</th><th>Selection</th><th data-type="num">SPE</th></tr></thead><tbody>
+{% for l in p.legs %}<tr><td>{{loop.index}}</td><td>{{l.home_team}} vs {{l.away_team}}</td><td>{{l.market_type}}</td><td>{{l.selection}}</td><td data-v="{{l.spe}}" class="m">{{l.spe}}</td></tr>{% endfor %}</tbody></table></div>
+{% endfor %}
+</div>{% endif %}
+
+{% if not pl %}<div style="color:#8b949e;padding:20px;text-align:center">No parlays available for this sector</div>{% endif %}
+</div>
+
 </div></div>
 
 <script>
@@ -130,6 +165,41 @@ function stab(id){document.querySelectorAll('.tab').forEach(function(t){t.classL
 function filt(el,tid){var q=el.value.toLowerCase();document.querySelectorAll('#'+tid+' tbody tr').forEach(function(r){r.style.display=r.textContent.toLowerCase().indexOf(q)>=0?'':'none'})}
 function fsoode(q){q=q.toLowerCase();document.querySelectorAll('#sgg .sc').forEach(function(c){c.style.display=c.getAttribute('data-n').indexOf(q)>=0?'':'none'})}
 function fdiag(d){document.querySelectorAll('#sgg .sc').forEach(function(c){c.style.display=(d==='all'||c.getAttribute('data-d').indexOf(d)>=0)?'':'none'})}
+function toggleGrp(el){var body=el.nextElementSibling;if(body.classList.contains('collapsed')){body.classList.remove('collapsed');el.innerHTML=el.innerHTML.replace('&#9654;','&#9660;')}else{body.classList.add('collapsed');el.innerHTML=el.innerHTML.replace('&#9660;','&#9654;')}}
+
+/* CSV download for standard tables */
+function dlCSV(tid,fname){
+  var tbl=document.getElementById(tid);if(!tbl)return;
+  var csv=[];var rows=tbl.querySelectorAll('tr');
+  for(var i=0;i<rows.length;i++){
+    var cols=rows[i].querySelectorAll('th,td');var row=[];
+    for(var j=0;j<cols.length;j++){row.push('"'+cols[j].innerText.replace(/"/g,'""')+'"')}
+    csv.push(row.join(','));
+  }
+  var blob=new Blob([csv.join('\n')],{type:'text/csv'});
+  var a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=fname;a.click();
+}
+
+/* CSV download for SOODE cards */
+function dlSOODE(){dlCSV('soode-tbl','soode_cascading.csv')}
+
+/* CSV download for Weaponized Matrix */
+function dlMatrix(){
+  var csv=['Parlay,Grade,Adj%,Leg,Match,Market,Selection,SPE'];
+  var cards=document.querySelectorAll('#p-matrix .pc');
+  cards.forEach(function(c){
+    var pid=c.querySelector('.ph span:nth-child(2)').innerText;
+    var grade=c.querySelector('.ph span:first-child').innerText;
+    var adj=c.querySelector('.ph span:last-child').innerText.split('adj=')[1]||'';
+    var rows=c.querySelectorAll('tbody tr');
+    rows.forEach(function(r){
+      var cells=r.querySelectorAll('td');
+      csv.push('"'+pid+'","'+grade+'","'+adj+'","'+cells[0].innerText+'","'+cells[1].innerText+'","'+cells[2].innerText+'","'+cells[3].innerText+'","'+cells[4].innerText+'"');
+    });
+  });
+  var blob=new Blob([csv.join('\n')],{type:'text/csv'});
+  var a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='weaponized_matrix.csv';a.click();
+}
 
 /* SORTING: click any th to sort that column */
 document.addEventListener('DOMContentLoaded',function(){
@@ -145,32 +215,20 @@ document.addEventListener('DOMContentLoaded',function(){
           var rows=[];
           for(var i=0;i<tbody.rows.length;i++){rows.push(tbody.rows[i])}
           dir=(dir==='asc')?'desc':'asc';
-          /* reset arrows */
           var allTh=tbl.querySelectorAll('thead th');
           for(var j=0;j<allTh.length;j++){allTh[j].textContent=allTh[j].textContent.replace(/ ▲/g,'').replace(/ ▼/g,'')}
           th.textContent+=(dir==='asc')?' ▲':' ▼';
-
           rows.sort(function(a,b){
-            var cellA=a.cells[colIdx];
-            var cellB=b.cells[colIdx];
+            var cellA=a.cells[colIdx];var cellB=b.cells[colIdx];
             if(!cellA||!cellB)return 0;
-            /* use data-v attribute if present, otherwise innerText */
             var va=cellA.getAttribute('data-v')||cellA.innerText.trim();
             var vb=cellB.getAttribute('data-v')||cellB.innerText.trim();
-            /* detect date: YYYY-MM-DD or YYYY-MM-DD HH:MM */
             if(va.length>=10 && va.charAt(4)==='-' && va.charAt(7)==='-'){
-              if(dir==='asc')return va<vb?-1:va>vb?1:0;
-              return va>vb?-1:va<vb?1:0;
+              if(dir==='asc')return va<vb?-1:va>vb?1:0;return va>vb?-1:va<vb?1:0;
             }
-            /* numeric */
-            var na=parseFloat(va);
-            var nb=parseFloat(vb);
-            if(!isNaN(na)&&!isNaN(nb)){
-              return dir==='asc'?na-nb:nb-na;
-            }
-            /* string */
-            if(dir==='asc')return va.localeCompare(vb);
-            return vb.localeCompare(va);
+            var na=parseFloat(va);var nb=parseFloat(vb);
+            if(!isNaN(na)&&!isNaN(nb)){return dir==='asc'?na-nb:nb-na}
+            if(dir==='asc')return va.localeCompare(vb);return vb.localeCompare(va);
           });
           for(var k=0;k<rows.length;k++){tbody.appendChild(rows[k])}
         });
@@ -247,10 +305,20 @@ def dash():
             else:tri+=1
         else:tri+=1
     pl.sort(key=lambda x:x["adj"],reverse=True)
-    cur.execute("SELECT t.name,s.micro_grip,s.meso_grip,s.macro_grip,s.dna_grip,s.system_diagnosis FROM soode_keys s JOIN teams t ON s.team_id=t.team_id ORDER BY s.dna_grip ASC")
-    so=[{"name":r["name"],"micro":float(r["micro_grip"]),"meso":float(r["meso_grip"]),"macro":float(r["macro_grip"]),"dna":float(r["dna_grip"]),"diag":r["system_diagnosis"]} for r in cur.fetchall()]
-    cur.execute(f"SELECT la.home_team,la.away_team,ra.matchup_class,ra.kelly_modifier,la.market_type,la.predicted_outcome,ra.refined_spe FROM refined_alpha ra JOIN live_alpha la ON ra.alpha_id=la.id WHERE 1=1 {mf} ORDER BY ra.refined_spe DESC LIMIT 200")
-    rf=[{"home":r["home_team"],"away":r["away_team"],"matchup":r["matchup_class"],"modifier":float(r["kelly_modifier"]),"market":r["market_type"],"selection":r["predicted_outcome"],"refined_spe":float(r["refined_spe"])} for r in cur.fetchall()]
+    # SOODE with date context
+    cur.execute("SELECT t.name,s.micro_grip,s.meso_grip,s.macro_grip,s.dna_grip,s.system_diagnosis,s.updated_at FROM soode_keys s JOIN teams t ON s.team_id=t.team_id ORDER BY s.dna_grip ASC")
+    so=[]
+    for r in cur.fetchall():
+        dl=""
+        if r.get("updated_at"):
+            dl=str(r["updated_at"])[:16].replace("T"," ")
+        so.append({"name":r["name"],"micro":float(r["micro_grip"]),"meso":float(r["meso_grip"]),"macro":float(r["macro_grip"]),"dna":float(r["dna_grip"]),"diag":r["system_diagnosis"],"date_label":dl})
+    # Refined alpha with date
+    cur.execute(f"SELECT la.match_date,la.home_team,la.away_team,ra.matchup_class,ra.kelly_modifier,la.market_type,la.predicted_outcome,ra.refined_spe FROM refined_alpha ra JOIN live_alpha la ON ra.alpha_id=la.id WHERE 1=1 {mf} ORDER BY ra.refined_spe DESC LIMIT 200")
+    rf=[]
+    for r in cur.fetchall():
+        dt=str(r["match_date"])[:16].replace("T"," ") if r.get("match_date") else ""
+        rf.append({"date":dt,"home":r["home_team"],"away":r["away_team"],"matchup":r["matchup_class"],"modifier":float(r["kelly_modifier"]),"market":r["market_type"],"selection":r["predicted_outcome"],"refined_spe":float(r["refined_spe"])})
     cur.close();conn.close()
     return render_template_string(T,mt=mt,od=od,al=al,pl=pl,so=so,rf=rf,sector=sector,sn=SN.get(sector,"All"),
         sc2=len(al),ca=SA.get(sector,68.2) if sector!="all" else 68.2,
