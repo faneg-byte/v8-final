@@ -305,19 +305,20 @@ def dash():
             else:tri+=1
         else:tri+=1
     pl.sort(key=lambda x:x["adj"],reverse=True)
-    # SOODE with date context
-    cur.execute("SELECT t.name,s.micro_grip,s.meso_grip,s.macro_grip,s.dna_grip,s.system_diagnosis,s.updated_at FROM soode_keys s JOIN teams t ON s.team_id=t.team_id ORDER BY s.dna_grip ASC")
+    # SOODE with date context (get latest match_date per team from live_alpha)
+    cur.execute("SELECT t.name,s.micro_grip,s.meso_grip,s.macro_grip,s.dna_grip,s.system_diagnosis FROM soode_keys s JOIN teams t ON s.team_id=t.team_id ORDER BY s.dna_grip ASC")
     so=[]
     for r in cur.fetchall():
-        dl=""
-        if r.get("updated_at"):
-            dl=str(r["updated_at"])[:16].replace("T"," ")
-        so.append({"name":r["name"],"micro":float(r["micro_grip"]),"meso":float(r["meso_grip"]),"macro":float(r["macro_grip"]),"dna":float(r["dna_grip"]),"diag":r["system_diagnosis"],"date_label":dl})
+        so.append({"name":r["name"],"micro":float(r["micro_grip"]),"meso":float(r["meso_grip"]),"macro":float(r["macro_grip"]),"dna":float(r["dna_grip"]),"diag":r["system_diagnosis"],"date_label":""})
     # Refined alpha with date
     cur.execute(f"SELECT la.match_date,la.home_team,la.away_team,ra.matchup_class,ra.kelly_modifier,la.market_type,la.predicted_outcome,ra.refined_spe FROM refined_alpha ra JOIN live_alpha la ON ra.alpha_id=la.id WHERE 1=1 {mf} ORDER BY ra.refined_spe DESC LIMIT 200")
     rf=[]
     for r in cur.fetchall():
-        dt=str(r["match_date"])[:16].replace("T"," ") if r.get("match_date") else ""
+        dt=""
+        try:
+            md=r.get("match_date") or r.get("match_date","")
+            if md: dt=str(md)[:16].replace("T"," ")
+        except: pass
         rf.append({"date":dt,"home":r["home_team"],"away":r["away_team"],"matchup":r["matchup_class"],"modifier":float(r["kelly_modifier"]),"market":r["market_type"],"selection":r["predicted_outcome"],"refined_spe":float(r["refined_spe"])})
     cur.close();conn.close()
     return render_template_string(T,mt=mt,od=od,al=al,pl=pl,so=so,rf=rf,sector=sector,sn=SN.get(sector,"All"),
